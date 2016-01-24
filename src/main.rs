@@ -1,9 +1,17 @@
+extern crate core;
 extern crate mmap;
 
+mod revlog {
+
+use core::fmt::Write;
 use mmap::{MapOption,MemoryMap};
 use std::os::unix::io::AsRawFd;
+use std::error;
 use std::fs;
 use std::fmt;
+use std::result;
+
+type Result<T> = result::Result<T, Box<error::Error>>;
 
 /// A low-level cursor into RevlogNG index entry.
 /// For instance, these fields do not yet take into account:
@@ -30,8 +38,36 @@ struct RevlogEntry {
     byte_offset: isize,
 }
 
+struct Revlog {
+    path: String,
+    mmap: MemoryMap,
+}
+
+impl Revlog {
+    fn open(path: &str) -> Result<Revlog> {
+        let attr = fs::metadata(path).unwrap();
+        assert!(attr.is_file(), "{} isn't a file", path);
+        let f = try!(fs::File::open(path));
+        let m = try!(MemoryMap::new(attr.len() as usize, &[
+            MapOption::MapReadable,
+            MapOption::MapFd(f.as_raw_fd())]));
+        return Ok(Revlog { path: String::from(path), mmap: m });
+    }
+
+    fn entry<'a> (&'a self, i: isize) -> &'a RevlogEntry {
+        unsafe {
+            let p = self.mmap.data().offset(i) as *const [u8; 64];
+            dump_revlog_hex(&*p);
+            &*(p as *const RevlogChunk)
+        }
+    }
+}
+
 impl fmt::Display for RevlogEntry {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "comp_len: {}, uncomp_len: {}",
+               u32::from_be(self.chunk.comp_len),
+               u32::from_be(self.chunk.uncomp_len))
     }
 }
 
@@ -44,28 +80,18 @@ fn dump_revlog_hex(data: &[u8; 64]) {
     println!("");
 }
 
-fn read_revlog_entry<'a> (m: &'a MemoryMap, i: isize) -> &'a RevlogEntry {
-    unsafe {
-        let p = m.data().offset(i) as *const [u8; 64];
-        dump_revlog_hex(&*p);
-        &*(p as *const RevlogEntry)
-    }
+pub fn read_revlog(path: &str) {
+    let revlog = Revlog::open(path).unwrap();
+    println!("{}:", revlog.path);
+    let entry = revlog.entry(0);
+    println!("{:?}", entry);
+    println!("");
 }
 
-fn read_revlog(path: &str) {
-    let attr = fs::metadata(path).unwrap();
-    assert!(attr.is_file(), "{} isn't a file", path);
-    let f = fs::OpenOptions::new()
-        .open(path).unwrap();
-    let m = MemoryMap::new(attr.len() as usize, &[
-        MapOption::MapReadable,
-        MapOption::MapFd(f.as_raw_fd())]).unwrap();
-    println!("{:?}", read_revlog_entry(&m, 0));
-    return;
-}
+}  // mod revlog
 
 fn main() {
     for path in std::env::args().skip(1) {
-        read_revlog(&path);
+        revlog::read_revlog(&path);
     }
 }
