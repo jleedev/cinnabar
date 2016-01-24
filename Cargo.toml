@@ -1,0 +1,7 @@
+[package]
+name = "cinnabar"
+version = "0.1.0"
+authors = ["Josh Lee <jleedev@gmail.com>"]
+
+[dependencies]
+mmap = "0.1.1"
