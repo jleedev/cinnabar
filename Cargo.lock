@@ -3,6 +3,7 @@ name = "cinnabar"
 version = "0.1.0"
 dependencies = [
  "mmap 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "rustc-serialize 0.3.16 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -42,6 +43,11 @@ dependencies = [
  "libc 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "winapi 0.2.5 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
+
+[[package]]
+name = "rustc-serialize"
+version = "0.3.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "tempdir"
