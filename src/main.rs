@@ -78,7 +78,7 @@ mod revlog {
     impl<'a> fmt::Display for RevlogEntry<'a> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             write!(f,
-                   "comp_len: {}, uncomp_len: {},base_rev: {}, link_rev: {}, \
+                   "comp_len: {}, uncomp_len: {}, base_rev: {}, link_rev: {}, \
                    parent_1: {}, parent_2: {}, node_id: {}",
                    i32::from_be(self.chunk.comp_len),
                    i32::from_be(self.chunk.uncomp_len),
