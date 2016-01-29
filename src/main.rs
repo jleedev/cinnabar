@@ -15,12 +15,18 @@ mod revlog {
 
     type Result<T> = result::Result<T, Box<error::Error>>;
 
+    const REVLOGV0: u32 = 0;
+    const REVLOGNG: u32 = 1;
+    const REVLOGNGINLINEDATA: u32 = (1 << 16);
+    const REVLOGGENERALDELTA: u32 = (1 << 17);
+
     /// A low-level cursor into RevlogNG index entry.
     /// For instance, these fields do not yet take into account:
     /// - Conversion from big endian
     /// - Masking the version out of the first offset_flags
     /// - Selecting the first 20 bytes of c_node_id
     #[derive(Debug)]
+    #[repr(C)]
     struct RevlogChunk {
         offset_flags: u64,
         comp_len: i32,
@@ -41,27 +47,61 @@ mod revlog {
     }
 
     struct Revlog {
-        path: String,
-        mmap: MemoryMap,
+        index: MemoryMap,
+        index_path: String,
+        data: Option<MemoryMap>,
+        data_path: Option<String>,
+        inline: bool,
+    }
+
+    fn mmap_helper(path: &str) -> Result<MemoryMap> {
+        let attr = fs::metadata(path).unwrap();
+        assert!(attr.is_file(), "{} isn't a file", path);
+        let f = try!(fs::File::open(path));
+        let opts = &[MapOption::MapReadable, MapOption::MapFd(f.as_raw_fd())];
+        match MemoryMap::new(attr.len() as usize, opts) {
+            Ok(m) => Ok(m),
+            Err(e) => Err(Box::new(e)),
+        }
     }
 
     impl Revlog {
         fn open(path: &str) -> Result<Revlog> {
-            let attr = fs::metadata(path).unwrap();
-            assert!(attr.is_file(), "{} isn't a file", path);
-            let f = try!(fs::File::open(path));
-            let m = try!(MemoryMap::new(attr.len() as usize,
-                                        &[MapOption::MapReadable,
-                                          MapOption::MapFd(f.as_raw_fd())]));
-            return Ok(Revlog {
-                path: String::from(path),
-                mmap: m,
-            });
+            assert!(path.ends_with(".i"));
+            let index = try!(mmap_helper(path));
+
+            // Read the flags from the first entry to store some
+            // important globals
+
+            let data;
+            let data_path;
+            let inline = true;
+            if inline {
+                data = None;
+                data_path = None;
+            } else {
+                let mut y = String::from(&path[..path.len() - 2]);
+                y.push_str(".d");
+                data = Some(try!(mmap_helper(&*y)));
+                data_path = Some(y);
+            }
+
+            let mut result = Revlog {
+                index_path: String::from(path),
+                index: index,
+                inline: inline,
+                data_path: data_path,
+                data: data,
+            };
+            result.init();
+            return Ok(result);
         }
+
+        fn init(&mut self) {}
 
         fn entry(&self, i: isize) -> RevlogEntry {
             let chunk: &RevlogChunk = unsafe {
-                let p = self.mmap.data().offset(i) as *const [u8; 64];
+                let p = self.index.data().offset(i) as *const [u8; 64];
                 dump_revlog_hex(&*p);
                 &*(p as *const RevlogChunk)
             };
@@ -78,8 +118,8 @@ mod revlog {
     impl<'a> fmt::Display for RevlogEntry<'a> {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             write!(f,
-                   "comp_len: {}, uncomp_len: {}, base_rev: {}, link_rev: {}, \
-                   parent_1: {}, parent_2: {}, node_id: {}",
+                   "comp_len: {}, uncomp_len: {}, base_rev: {}, link_rev: {}, parent_1: {}, \
+                    parent_2: {}, node_id: {}",
                    i32::from_be(self.chunk.comp_len),
                    i32::from_be(self.chunk.uncomp_len),
                    i32::from_be(self.chunk.base_rev),
@@ -90,23 +130,23 @@ mod revlog {
         }
     }
 
-    fn dump_revlog_hex(data: &[u8; 64]) {
-        for (i, b) in data.iter().enumerate() {
-            if i > 0 && i % 4 == 0 {
-                print!(" ")
-            }
-            if i > 0 && i % 16 == 0 {
-                println!("")
-            }
-            print!("{:02x}", b);
+    fn dump_revlog_hex(data: &[u8]) {
+        if data.len() == 0 {
+            return;
         }
-        println!("");
+        let (x, xs) = data.split_at(16);
+        println!("{}", x.to_hex());
+        dump_revlog_hex(xs);
     }
 
     pub fn read_revlog(path: &str) {
         let revlog = Revlog::open(path).unwrap();
-        println!("{}:", revlog.path);
+        println!("{}:", revlog.index_path);
         let entry = revlog.entry(0);
+        println!("{}", entry);
+        let entry = revlog.entry(65);
+        println!("{}", entry);
+        let entry = revlog.entry(129);
         println!("{}", entry);
         println!("");
     }
