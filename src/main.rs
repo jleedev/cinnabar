@@ -15,6 +15,21 @@ mod revlog {
 
     type Result<T> = result::Result<T, Box<error::Error>>;
 
+    /// Like assert!, but returns a Result(Err) instead of panicking.
+    macro_rules! expect {
+        ( $e:expr, $($t:tt)+ ) => {
+            if !$e {
+                use std::fmt::Write;
+                let mut s = String::new();
+                write!(s, $($t)+).unwrap();
+                return Err(From::from(s))
+            }
+        };
+        ( $e:expr ) => {
+            expect!($e, "{}", stringify!($e));
+        };
+    }
+
     const REVLOGV0: u32 = 0;
     const REVLOGNG: u32 = 1;
     const REVLOGNGINLINEDATA: u32 = (1 << 16);
@@ -55,19 +70,16 @@ mod revlog {
     }
 
     fn mmap_helper(path: &str) -> Result<MemoryMap> {
-        let attr = fs::metadata(path).unwrap();
-        assert!(attr.is_file(), "{} isn't a file", path);
+        let attr = try!(fs::metadata(path));
+        expect!(attr.is_file());
         let f = try!(fs::File::open(path));
         let opts = &[MapOption::MapReadable, MapOption::MapFd(f.as_raw_fd())];
-        match MemoryMap::new(attr.len() as usize, opts) {
-            Ok(m) => Ok(m),
-            Err(e) => Err(Box::new(e)),
-        }
+        MemoryMap::new(attr.len() as usize, opts).map_err(From::from)
     }
 
     impl Revlog {
         fn open(path: &str) -> Result<Revlog> {
-            assert!(path.ends_with(".i"));
+            expect!(path.ends_with(".i"));
             let index = try!(mmap_helper(path));
 
             // Read the flags from the first entry to store some
@@ -99,7 +111,15 @@ mod revlog {
 
         fn init(&mut self) {}
 
-        fn entry(&self, i: isize) -> RevlogEntry {
+        /// An index entry is 64 bytes long.
+        /// If the revision data is not inline, then the index entries
+        /// must be aligned at 64-byte boundaries. Otherwise, they may
+        /// be anywhere.
+        fn index_entry_at_byte(&self, i: isize) -> Result<RevlogEntry> {
+            if self.inline {
+                expect!(i % 64 == 0);
+            }
+
             let chunk: &RevlogChunk = unsafe {
                 let p = self.index.data().offset(i) as *const [u8; 64];
                 dump_revlog_hex(&*p);
@@ -109,9 +129,20 @@ mod revlog {
                 chunk: chunk,
                 byte_offset: i,
             };
-            debug_assert!(result.chunk.c_node_id[20..] == [0; 12],
-                          "Misaligned chunk (missing id padding)");
-            return result;
+            expect!(result.chunk.c_node_id[20..] == [0; 12]);
+            return Ok(result);
+        }
+
+        /// Fetches revision i.
+        /// The special revision -1 always exists.
+        /// If the revision data is inline, then the first access incurs
+        /// a full scan of the file.
+        fn entry(&self, i: isize) -> Result<RevlogEntry> {
+            if self.inline {
+                Err(From::from("unimplemented"))
+            } else {
+                self.index_entry_at_byte(i * 64)
+            }
         }
     }
 
@@ -139,22 +170,20 @@ mod revlog {
         dump_revlog_hex(xs);
     }
 
-    pub fn read_revlog(path: &str) {
-        let revlog = Revlog::open(path).unwrap();
+    pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
+        let revlog = try!(Revlog::open(path));
         println!("{}:", revlog.index_path);
-        let entry = revlog.entry(0);
-        println!("{}", entry);
-        let entry = revlog.entry(65);
-        println!("{}", entry);
-        let entry = revlog.entry(129);
-        println!("{}", entry);
+        println!("{}", revlog.entry(0).unwrap());
+        println!("{}", revlog.entry(1).unwrap());
+        println!("{}", revlog.entry(2).unwrap());
         println!("");
+        Ok(())
     }
 
 }  // mod revlog
 
 fn main() {
     for path in std::env::args().skip(1) {
-        revlog::read_revlog(&path);
+        revlog::read_revlog(&path).unwrap();
     }
 }
