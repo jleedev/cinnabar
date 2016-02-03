@@ -7,6 +7,7 @@ mod revlog {
     use core::fmt::Write;
     use mmap::{MapOption, MemoryMap};
     use rustc_serialize::hex::ToHex;
+    use std::mem;
     use std::os::unix::io::AsRawFd;
     use std::error;
     use std::fs;
@@ -69,6 +70,15 @@ mod revlog {
         inline: bool,
     }
 
+    fn extract_value<T>(data: &MemoryMap, index: isize) -> &T {
+        assert!(index >= 0);
+        assert!(index as usize + mem::size_of::<T>() < data.len());
+        unsafe {
+            let p: *const T = data.data().offset(index) as *const T;
+            &*p
+        }
+    }
+
     fn mmap_helper(path: &str) -> Result<MemoryMap> {
         let attr = try!(fs::metadata(path));
         expect!(attr.is_file());
@@ -80,20 +90,33 @@ mod revlog {
     impl Revlog {
         fn open(path: &str) -> Result<Revlog> {
             expect!(path.ends_with(".i"));
+            println!("");
+            println!("opening index: {:?}", path);
             let index = try!(mmap_helper(path));
 
             // Read the flags from the first entry to store some
             // important globals
+            let flags: u32 = {
+                let first_chunk: &RevlogChunk = extract_value(&index, 0);
+                let offset_flags = u64::from_be(first_chunk.offset_flags);
+                (offset_flags >> 32) as u32
+            };
+            println!("flags: {:08x}", flags);
+            expect!(flags & REVLOGNG != 0);
+            let inline = (flags & REVLOGNGINLINEDATA) != 0;
+            let generaldelta = (flags & REVLOGGENERALDELTA) != 0;
+            println!("inline: {}", inline);
+            println!("generaldelta: {}", generaldelta);
 
             let data;
             let data_path;
-            let inline = true;
             if inline {
                 data = None;
                 data_path = None;
             } else {
                 let mut y = String::from(&path[..path.len() - 2]);
                 y.push_str(".d");
+                println!("opening data: {:?}", y);
                 data = Some(try!(mmap_helper(&*y)));
                 data_path = Some(y);
             }
@@ -120,11 +143,7 @@ mod revlog {
                 expect!(i % 64 == 0);
             }
 
-            let chunk: &RevlogChunk = unsafe {
-                let p = self.index.data().offset(i) as *const [u8; 64];
-                dump_revlog_hex(&*p);
-                &*(p as *const RevlogChunk)
-            };
+            let chunk: &RevlogChunk = extract_value(&self.index, i);
             let result = RevlogEntry {
                 chunk: chunk,
                 byte_offset: i,
@@ -172,11 +191,11 @@ mod revlog {
 
     pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
         let revlog = try!(Revlog::open(path));
-        println!("{}:", revlog.index_path);
+        /*
         println!("{}", revlog.entry(0).unwrap());
         println!("{}", revlog.entry(1).unwrap());
         println!("{}", revlog.entry(2).unwrap());
-        println!("");
+        */
         Ok(())
     }
 
@@ -184,6 +203,9 @@ mod revlog {
 
 fn main() {
     for path in std::env::args().skip(1) {
-        revlog::read_revlog(&path).unwrap();
+        match revlog::read_revlog(&path) {
+            Ok(()) => (),
+            Err(e) => println!("{}", e),
+        }
     }
 }
