@@ -25,12 +25,12 @@ fn dump_revlog_hex(data: &[u8]) {
 pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
     let revlog = try!(revlog::Revlog::open(path));
     for (i, entry) in revlog.iter().enumerate() {
-        println!("{} => {}", i, try!(entry));
+        let entry = entry.unwrap();
+        println!("{} => {}", i, entry);
+        println!("hex data: {:?}", entry.data.to_hex());
+        println!("str data: {:?}", String::from_utf8_lossy(entry.data));
+        println!("");
     }
-    // for i in 0..10 {
-    // println!("{} => {}", i, try!(revlog.entry(i)));
-    // }
-    //
     Ok(())
 }
 

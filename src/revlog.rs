@@ -1,4 +1,3 @@
-use core::fmt::Write;
 use rustc_serialize::hex::ToHex;
 use std::fmt;
 
@@ -18,7 +17,7 @@ const REVLOGGENERALDELTA: u32 = (1 << 17);
 /// - Masking the version out of the first offset_flags
 /// - Selecting the first 20 bytes of c_node_id
 #[repr(C)]
-struct RevlogChunk {
+pub struct RevlogChunk {
     offset_flags: u64,
     comp_len: i32,
     uncomp_len: i32,
@@ -33,6 +32,9 @@ struct RevlogChunk {
 impl RevlogChunk {
     fn offset_flags(&self) -> u64 {
         u64::from_be(self.offset_flags)
+    }
+    fn offset(&self) -> u64 {
+        u64::from_be(self.offset_flags) >> 16
     }
     fn comp_len(&self) -> i32 {
         i32::from_be(self.comp_len)
@@ -57,49 +59,84 @@ impl RevlogChunk {
     }
 }
 
-struct RevlogEntry<'a> {
-    /// Pointer to the data block
-    chunk: &'a RevlogChunk,
+#[derive(Clone)]
+pub struct RevlogEntry<'a> {
+    pub revlog: &'a Revlog,
+    /// Pointer to the index block
+    pub chunk: &'a RevlogChunk,
     /// Byte offset of chunk in the index file
-    byte_offset: i32,
-    revlog: &'a Revlog,
+    pub byte_offset: i32,
+    /// Data frame can either be a slice of the inline data or
+    /// a slice of the external data.
+    pub data: &'a [u8],
 }
 
 impl<'a> RevlogEntry<'a> {
-    fn advance(self) -> Result<Option<RevlogEntry<'a>>> {
+    // Precondition: inline
+    fn inline_advance(self) -> Result<Option<RevlogEntry<'a>>> {
         let next = (self.byte_offset + self.chunk.comp_len() + 64) as u64;
         if next == self.revlog.index.len {
-            println!("Exactly reached the end.");
             return Ok(None);
         }
-        println!("Advancing from entry at {} with comp_len of {} to {}.",
-                 self.byte_offset,
-                 self.chunk.comp_len(),
-                 next);
         let result = try!(self.revlog.index_entry_at_byte(next as isize));
         Ok(Some(result))
     }
 }
 
-struct RevlogIterator<'a> {
+pub struct RevlogIterator<'a> {
     revlog: &'a Revlog,
     /// None if iter hasn't begun
-    cur: Option<&'a RevlogEntry<'a>>,
+    cur: Option<RevlogEntry<'a>>,
 }
 
 impl<'a> Iterator for RevlogIterator<'a> {
     type Item = Result<RevlogEntry<'a>>;
     fn next(&mut self) -> Option<Self::Item> {
-        None
+        let next = match self.cur {
+            None => {
+                match self.revlog.index_entry_at_byte(0) {
+                    Ok(entry) => Some(entry),
+                    Err(e) => return Some(Err(e)),
+                }
+            }
+            Some(ref prev) => {
+                if self.revlog.inline() {
+                    match prev.clone().inline_advance() {
+                        Ok(None) => None,
+                        Ok(Some(entry)) => Some(entry),
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    let next_offset = (prev.byte_offset + 64) as u64;
+                    if next_offset == self.revlog.index.len {
+                        None
+                    } else {
+                        match self.revlog.index_entry_at_byte(next_offset as isize) {
+                            Ok(entry) => Some(entry),
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+
+                }
+            }
+        };
+        self.cur = next.clone();
+        return next.map(Ok);
     }
 }
 
 pub struct Revlog {
     index: MappedData,
-    data: Option<MappedData>,
-    inline: bool,
+    data: RevlogData,
     generaldelta: bool,
     offset_table: Vec<u64>,
+}
+
+/// Revlog data may either be inline in the index, or in a separate file.
+/// (Inline should only be found in small files, as it requires a linear scan.)
+enum RevlogData {
+    Inline,
+    Separate(MappedData),
 }
 
 impl Revlog {
@@ -123,92 +160,55 @@ impl Revlog {
         println!("generaldelta: {}", generaldelta);
 
         let data = if inline {
-            None
+            RevlogData::Inline
         } else {
             let mut y = String::from(&path[..path.len() - 2]);
             y.push_str(".d");
             println!("opening data: {:?}", y);
-            Some(try!(util::MappedData::open(&*y)))
+            RevlogData::Separate(try!(util::MappedData::open(&*y)))
         };
 
-        let mut result = Revlog {
+        let result = Revlog {
             index: index,
             data: data,
-            inline: inline,
             generaldelta: generaldelta,
             offset_table: vec![0],
         };
-        result.init();
         return Ok(result);
     }
 
-    fn init(&mut self) {
-        assert!(self.inline != self.data.is_some());
-        // if self.inline {
-        // self.scan_index();
-        // }
-        //
+    fn inline(&self) -> bool {
+        match self.data {
+            RevlogData::Inline => true,
+            _ => false,
+        }
     }
-
-    // fn scan_index(&mut self) {
-    // loop {
-    // let mut entry = self.entry(0).unwrap();
-    // println!("{}", entry);
-    // }
-    // }
-    //
 
     /// An index entry is 64 bytes long.
     /// If the revision data is not inline, then the index entries
     /// must be aligned at 64-byte boundaries. Otherwise, they may
     /// be anywhere.
     fn index_entry_at_byte(&self, i: isize) -> Result<RevlogEntry> {
-        if !self.inline {
+        if !self.inline() {
             expect!(i % 64 == 0);
         }
 
         let chunk: &RevlogChunk = self.index.extract_value(i);
+        let data = match self.data {
+            RevlogData::Inline => self.index.extract_slice(i + 64, chunk.comp_len() as usize),
+            RevlogData::Separate(ref data) => {
+                let offset = if i == 0 { 0 } else { chunk.offset() as isize };
+                data.extract_slice(offset, chunk.comp_len() as usize)
+            }
+        };
         let result = RevlogEntry {
+            revlog: &self,
             chunk: chunk,
             byte_offset: i as i32,
-            revlog: &self,
+            data: data,
         };
         expect!(result.chunk.c_node_id[20..] == [0; 12]);
         return Ok(result);
-    }
-
-    /// Fetches revision i.
-    /// The special revision -1 always exists.
-    /// If the revision data is inline, then the first access incurs
-    /// a full scan of the file.
-    fn entry(&self, i: isize) -> Result<RevlogEntry> {
-        if self.inline {
-            // let (i, offset) = (self.offset_table.len() - 1,
-            // self.offset_table.last().unwrap());
-            // println!("Last offset: rev {} is at {}", i, offset);
-            //
-            println!("FIXME this is not smart yet");
-            let mut entry = try!(self.index_entry_at_byte(0));
-            let mut cur = 0;
-            loop {
-                if cur == i {
-                    return Ok(entry);
-                }
-                entry = match try!(entry.advance()) {
-                    Some(next_entry) => {
-                        cur = cur + 1;
-                        next_entry
-                    }
-                    None => {
-                        let mut s = String::new();
-                        write!(s, "No revision {}", i);
-                        return Err(From::from(s));
-                    }
-                }
-            }
-        } else {
-            self.index_entry_at_byte(i * 64)
-        }
     }
 
     pub fn iter(&self) -> RevlogIterator {
@@ -221,15 +221,22 @@ impl Revlog {
 
 impl<'a> fmt::Display for RevlogEntry<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "chunk<{}>", self.chunk)
+    }
+}
+
+impl fmt::Display for RevlogChunk {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f,
-               "comp_len: {}, uncomp_len: {}, base_rev: {}, link_rev: {}, parent_1: {}, \
-                parent_2: {}, node_id: {}",
-               self.chunk.comp_len(),
-               self.chunk.uncomp_len(),
-               self.chunk.base_rev(),
-               self.chunk.link_rev(),
-               self.chunk.parent_1(),
-               self.chunk.parent_2(),
-               self.chunk.c_node_id().to_hex())
+               "offset: {}, comp_len: {}, uncomp_len: {}, base_rev: {}, link_rev: {}, parent_1: \
+                {}, parent_2: {}, node_id: {}",
+               self.offset(),
+               self.comp_len(),
+               self.uncomp_len(),
+               self.base_rev(),
+               self.link_rev(),
+               self.parent_1(),
+               self.parent_2(),
+               self.c_node_id().to_hex())
     }
 }

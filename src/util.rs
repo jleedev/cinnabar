@@ -1,4 +1,4 @@
-use std::{mem, fs, result, error};
+use std::{mem, fs, result, error, slice};
 use std::os::unix::io::AsRawFd;
 use mmap;
 
@@ -50,10 +50,12 @@ impl MappedData {
     // and on bounding all borrows to the lifetime of the mmap itself,
     // which is given by the signature of this function; in principle
     // this means that the rest of the module can be safe code.
+
+    /// Borrow a value from the mmap, with bounds checking
     pub fn extract_value<T>(&self, index: isize) -> &T {
         assert!(index >= 0);
-        assert!(index as usize + mem::size_of::<T>() < self.len as usize,
-                "{} + {} > {}",
+        assert!(index as usize + mem::size_of::<T>() <= self.len as usize,
+                "{} + {} <= {}",
                 index,
                 mem::size_of::<T>(),
                 self.len as usize);
@@ -61,5 +63,16 @@ impl MappedData {
             let p = self.mmap.data().offset(index) as *const T;
             &*p
         }
+    }
+
+    /// Borrow a byte slice from the mmap, with bounds checking
+    pub fn extract_slice(&self, index: isize, len: usize) -> &[u8] {
+        assert!(index >= 0);
+        assert!(index + len as isize <= self.len as isize,
+                "{} + {} <= {}",
+                index,
+                len as isize,
+                self.len as isize);
+        unsafe { slice::from_raw_parts(self.mmap.data().offset(index), len) }
     }
 }
