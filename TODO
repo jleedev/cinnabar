@@ -5,3 +5,5 @@ and has -1 when the baserev is equal to the current revno
 
 might need to understand the behavior with 32 bit pointers
 what are mercurial's file size limits?
+
+actually scan the delta chain to produce the full text
