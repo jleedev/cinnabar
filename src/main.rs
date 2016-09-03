@@ -13,23 +13,30 @@ mod revlog;
 use std::{error, result};
 use rustc_serialize::hex::ToHex;
 
-fn dump_revlog_hex(data: &[u8]) {
-    if data.len() == 0 {
-        return;
-    }
-    let (x, xs) = data.split_at(16);
-    println!("{}", x.to_hex());
-    dump_revlog_hex(xs);
-}
-
 pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
     let revlog = try!(revlog::Revlog::open(path));
+
+    println!("   rev    offset  length   base linkrev nodeid       p1           p2");
+
     for (i, entry) in revlog.iter().enumerate() {
-        let entry = entry.unwrap();
-        println!("{} => {}", i, entry);
-        println!("hex data: {:?}", entry.data.to_hex());
-        println!("str data: {:?}", String::from_utf8_lossy(entry.data));
-        println!("");
+        let entry = try!(entry);
+
+        let p1 = entry.parent_1_id().map(|s| s.to_hex()).unwrap();
+        let p2 = entry.parent_2_id().map(|s| s.to_hex()).unwrap();
+        println!("{:6} {:9} {:7} {:6} {:7} {} {} {}",
+                 i,
+                 entry.offset(),
+                 entry.chunk.comp_len(),
+                 entry.chunk.base_rev(),
+                 entry.chunk.link_rev(),
+                 &entry.chunk.c_node_id()[..6].to_hex(),
+                 &p1[..12],
+                 &p2[..12]);
+
+        // println!("");
+        // println!("hex data: {:?}", entry.data.to_hex());
+        // println!("str data: {:?}", String::from_utf8_lossy(entry.data));
+        //
     }
     Ok(())
 }
@@ -39,7 +46,7 @@ fn main() {
     for path in std::env::args().skip(1) {
         match read_revlog(&path) {
             Ok(()) => (),
-            Err(e) => println!("{}", e),
+            Err(e) => println!("Err({:?})", e),
         }
     }
 }

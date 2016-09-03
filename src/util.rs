@@ -23,7 +23,7 @@ pub type Result<T> = result::Result<T, Box<error::Error>>;
 pub struct MappedData {
     pub mmap: mmap::MemoryMap,
     pub path: String,
-    pub len: u64,
+    pub len: isize,
 }
 
 impl MappedData {
@@ -36,7 +36,7 @@ impl MappedData {
         let result = MappedData {
             mmap: m,
             path: String::from(path),
-            len: attr.len(),
+            len: attr.len() as isize,
         };
         Ok(result)
     }

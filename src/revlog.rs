@@ -1,5 +1,6 @@
 use rustc_serialize::hex::ToHex;
 use std::fmt;
+use std::ops::Index;
 
 use util;
 
@@ -10,6 +11,8 @@ const REVLOGV0: u32 = 0;
 const REVLOGNG: u32 = 1;
 const REVLOGNGINLINEDATA: u32 = (1 << 16);
 const REVLOGGENERALDELTA: u32 = (1 << 17);
+
+const NULL_ID: &'static [u8] = &[0u8; 20];
 
 /// A low-level cursor into RevlogNG index entry.
 /// For instance, these fields do not yet take into account:
@@ -36,25 +39,25 @@ impl RevlogChunk {
     fn offset(&self) -> u64 {
         u64::from_be(self.offset_flags) >> 16
     }
-    fn comp_len(&self) -> i32 {
+    pub fn comp_len(&self) -> i32 {
         i32::from_be(self.comp_len)
     }
-    fn uncomp_len(&self) -> i32 {
+    pub fn uncomp_len(&self) -> i32 {
         i32::from_be(self.uncomp_len)
     }
-    fn base_rev(&self) -> i32 {
+    pub fn base_rev(&self) -> i32 {
         i32::from_be(self.base_rev)
     }
-    fn link_rev(&self) -> i32 {
+    pub fn link_rev(&self) -> i32 {
         i32::from_be(self.link_rev)
     }
-    fn parent_1(&self) -> i32 {
+    pub fn parent_1(&self) -> i32 {
         i32::from_be(self.parent_1)
     }
-    fn parent_2(&self) -> i32 {
+    pub fn parent_2(&self) -> i32 {
         i32::from_be(self.parent_2)
     }
-    fn c_node_id(&self) -> &[u8] {
+    pub fn c_node_id(&self) -> &[u8] {
         &self.c_node_id[..20]
     }
 }
@@ -65,7 +68,7 @@ pub struct RevlogEntry<'a> {
     /// Pointer to the index block
     pub chunk: &'a RevlogChunk,
     /// Byte offset of chunk in the index file
-    pub byte_offset: i32,
+    pub byte_offset: isize,
     /// Data frame can either be a slice of the inline data or
     /// a slice of the external data.
     pub data: &'a [u8],
@@ -74,12 +77,39 @@ pub struct RevlogEntry<'a> {
 impl<'a> RevlogEntry<'a> {
     // Precondition: inline
     fn inline_advance(self) -> Result<Option<RevlogEntry<'a>>> {
-        let next = (self.byte_offset + self.chunk.comp_len() + 64) as u64;
+        let next = (self.byte_offset + self.chunk.comp_len() as isize + 64) as isize;
         if next == self.revlog.index.len {
             return Ok(None);
         }
         let result = try!(self.revlog.index_entry_at_byte(next as isize));
         Ok(Some(result))
+    }
+
+    // Look up the node ids of the parents from the revs
+    pub fn parent_1_id(&self) -> Result<&[u8]> {
+        let p1 = self.chunk.parent_1() as isize;
+        if p1 == -1 {
+            return Ok(NULL_ID);
+        }
+        let entry = try!(self.revlog.index(p1));
+        Ok(entry.chunk.c_node_id())
+    }
+
+    pub fn parent_2_id(&self) -> Result<&[u8]> {
+        let p2 = self.chunk.parent_2() as isize;
+        if p2 == -1 {
+            return Ok(NULL_ID);
+        }
+        let entry = try!(self.revlog.index(p2));
+        Ok(entry.chunk.c_node_id())
+    }
+
+    pub fn offset(&self) -> u64 {
+        if self.byte_offset == 0 {
+            0
+        } else {
+            self.chunk.offset()
+        }
     }
 }
 
@@ -107,7 +137,7 @@ impl<'a> Iterator for RevlogIterator<'a> {
                         Err(e) => return Some(Err(e)),
                     }
                 } else {
-                    let next_offset = (prev.byte_offset + 64) as u64;
+                    let next_offset = prev.byte_offset + 64;
                     if next_offset == self.revlog.index.len {
                         None
                     } else {
@@ -126,23 +156,23 @@ impl<'a> Iterator for RevlogIterator<'a> {
 }
 
 pub struct Revlog {
+    /// Mmap of the index file.
     index: MappedData,
-    data: RevlogData,
+    /// Revlog data may either be inline in the index, or in a separate
+    /// file. Inline should only be found in small files, as it requires
+    /// a linear scan.)
+    data: Option<MappedData>,
+    /// Important flags extracted from the first rev.
     generaldelta: bool,
-    offset_table: Vec<u64>,
-}
-
-/// Revlog data may either be inline in the index, or in a separate file.
-/// (Inline should only be found in small files, as it requires a linear scan.)
-enum RevlogData {
-    Inline,
-    Separate(MappedData),
+    /// If inline, a jump table is built.
+    /// Mapping from rev no to byte_offset in the index.
+    offset_table: Vec<isize>,
 }
 
 impl Revlog {
     pub fn open(path: &str) -> Result<Revlog> {
         expect!(path.ends_with(".i"));
-        println!("");
+        println!("=====");
         println!("opening index: {:?}", path);
         let index = try!(util::MappedData::open(path));
 
@@ -160,28 +190,39 @@ impl Revlog {
         println!("generaldelta: {}", generaldelta);
 
         let data = if inline {
-            RevlogData::Inline
+            None
         } else {
             let mut y = String::from(&path[..path.len() - 2]);
             y.push_str(".d");
             println!("opening data: {:?}", y);
-            RevlogData::Separate(try!(util::MappedData::open(&*y)))
+            Some(try!(util::MappedData::open(&*y)))
         };
 
-        let result = Revlog {
+        let mut result = Revlog {
             index: index,
             data: data,
             generaldelta: generaldelta,
-            offset_table: vec![0],
+            offset_table: vec![],
         };
+        try!(result.init());
         return Ok(result);
     }
 
-    fn inline(&self) -> bool {
-        match self.data {
-            RevlogData::Inline => true,
-            _ => false,
+    fn init(&mut self) -> Result<()> {
+        if !self.inline() {
+            return Ok(());
         }
+        let mut accum = vec![];
+        for entry in self.iter() {
+            let entry = try!(entry);
+            accum.push(entry.byte_offset);
+        }
+        self.offset_table = accum;
+        Ok(())
+    }
+
+    fn inline(&self) -> bool {
+        self.data.is_none()
     }
 
     /// An index entry is 64 bytes long.
@@ -195,19 +236,37 @@ impl Revlog {
 
         let chunk: &RevlogChunk = self.index.extract_value(i);
         let data = match self.data {
-            RevlogData::Inline => self.index.extract_slice(i + 64, chunk.comp_len() as usize),
-            RevlogData::Separate(ref data) => {
+            None => self.index.extract_slice(i + 64, chunk.comp_len() as usize),
+            Some(ref data) => {
                 let offset = if i == 0 { 0 } else { chunk.offset() as isize };
                 data.extract_slice(offset, chunk.comp_len() as usize)
             }
         };
+
         let result = RevlogEntry {
             revlog: &self,
             chunk: chunk,
-            byte_offset: i as i32,
+            byte_offset: i,
             data: data,
         };
+
+        // Some quick sanity checks which are always true and can help
+        // verify correctness:
+        // - The 32 byte id field is 20 bytes of sha and 12 zero bytes
+        // - The data frame when nonempty begins with
+        //   null -> as is, including the null
+        //   u -> as is, not including the u
+        //   x -> gzip header
+        // - All ids are positive signed integers
         expect!(result.chunk.c_node_id[20..] == [0; 12]);
+        if data.len() > 0 {
+            match data[0] as char {
+                '\0' => (),
+                'u' => (),
+                'x' => (),
+                c => expect!(false, "Weird data type {:?}", c),
+            }
+        }
         return Ok(result);
     }
 
@@ -217,26 +276,28 @@ impl Revlog {
             cur: None,
         }
     }
-}
 
-impl<'a> fmt::Display for RevlogEntry<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "chunk<{}>", self.chunk)
+    pub fn len(&self) -> isize {
+        if self.inline() {
+            // We have a handy lookup table
+            self.offset_table.len() as isize
+        } else {
+            // The index file is 64 bytes * the number of revs
+            self.index.len / 64
+        }
     }
-}
 
-impl fmt::Display for RevlogChunk {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "offset: {}, comp_len: {}, uncomp_len: {}, base_rev: {}, link_rev: {}, parent_1: \
-                {}, parent_2: {}, node_id: {}",
-               self.offset(),
-               self.comp_len(),
-               self.uncomp_len(),
-               self.base_rev(),
-               self.link_rev(),
-               self.parent_1(),
-               self.parent_2(),
-               self.c_node_id().to_hex())
+    pub fn index(&self, index: isize) -> Result<RevlogEntry> {
+        if self.inline() {
+            expect!(index >= 0, "index {} is out of bounds", index);
+            expect!(index < self.offset_table.len() as isize,
+                    "index {} is bigger than {}",
+                    index,
+                    self.offset_table.len());
+            let offset = self.offset_table[index as usize];
+            return self.index_entry_at_byte(offset);
+        } else {
+            return self.index_entry_at_byte(64 * index);
+        }
     }
 }
