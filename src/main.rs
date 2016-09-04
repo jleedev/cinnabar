@@ -23,13 +23,13 @@ pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
                  " base"
              });
 
-    for (i, entry) in revlog.iter().enumerate() {
+    for entry in revlog.iter() {
         let entry = try!(entry);
 
         let p1 = entry.parent_1_id().map(|s| s.to_hex()).unwrap();
         let p2 = entry.parent_2_id().map(|s| s.to_hex()).unwrap();
         println!("{:6} {:9} {:7} {:6} {:7} {} {} {}",
-                 i,
+                 entry.revno,
                  entry.offset(),
                  entry.chunk.comp_len(),
                  entry.base_rev(),

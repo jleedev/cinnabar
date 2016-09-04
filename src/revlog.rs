@@ -179,6 +179,8 @@ pub struct Revlog {
     /// If inline, a jump table is built.
     /// Mapping from rev no to byte_offset in the index.
     offset_table: Vec<isize>,
+    /// Has init finished being called?
+    _incomplete: bool,
 }
 
 impl Revlog {
@@ -215,12 +217,15 @@ impl Revlog {
             data: data,
             generaldelta: generaldelta,
             offset_table: vec![],
+            _incomplete: true,
         };
         try!(result.init());
         return Ok(result);
     }
 
     fn init(&mut self) -> Result<()> {
+        assert!(self._incomplete);
+        self._incomplete = false;
         if !self.inline() {
             return Ok(());
         }
@@ -238,6 +243,11 @@ impl Revlog {
     }
 
     fn revno_from_offset(&self, offset: isize) -> Result<i32> {
+        if self._incomplete {
+            // This is just supplementary data so the entry can know its
+            // own revno. Omit it during construction.
+            return Ok(-1);
+        }
         if self.inline() {
             match self.offset_table.binary_search(&offset) {
                 Ok(i) => Ok(i as i32),
