@@ -16,7 +16,12 @@ use rustc_serialize::hex::ToHex;
 pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
     let revlog = try!(revlog::Revlog::open(path));
 
-    println!("   rev    offset  length   base linkrev nodeid       p1           p2");
+    println!("   rev    offset  length  {} linkrev nodeid       p1           p2",
+             if revlog.generaldelta {
+                 "delta"
+             } else {
+                 " base"
+             });
 
     for (i, entry) in revlog.iter().enumerate() {
         let entry = try!(entry);
@@ -27,7 +32,7 @@ pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
                  i,
                  entry.offset(),
                  entry.chunk.comp_len(),
-                 entry.chunk.base_rev(),
+                 entry.base_rev(),
                  entry.chunk.link_rev(),
                  &entry.chunk.c_node_id()[..6].to_hex(),
                  &p1[..12],

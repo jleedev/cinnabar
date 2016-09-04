@@ -18,6 +18,7 @@ const NULL_ID: &'static [u8] = &[0u8; 20];
 /// For instance, these fields do not yet take into account:
 /// - Conversion from big endian
 /// - Masking the version out of the first offset_flags
+/// - Distinguishing between offset and flags for the first rev
 /// - Selecting the first 20 bytes of c_node_id
 #[repr(C)]
 pub struct RevlogChunk {
@@ -65,6 +66,8 @@ impl RevlogChunk {
 #[derive(Clone)]
 pub struct RevlogEntry<'a> {
     pub revlog: &'a Revlog,
+    /// This rev's position in the index
+    pub revno: i32,
     /// Pointer to the index block
     pub chunk: &'a RevlogChunk,
     /// Byte offset of chunk in the index file
@@ -81,13 +84,13 @@ impl<'a> RevlogEntry<'a> {
         if next == self.revlog.index.len {
             return Ok(None);
         }
-        let result = try!(self.revlog.index_entry_at_byte(next as isize));
+        let result = try!(self.revlog.index_entry_at_byte(next as isize, None));
         Ok(Some(result))
     }
 
     // Look up the node ids of the parents from the revs
     pub fn parent_1_id(&self) -> Result<&[u8]> {
-        let p1 = self.chunk.parent_1() as isize;
+        let p1 = self.chunk.parent_1();
         if p1 == -1 {
             return Ok(NULL_ID);
         }
@@ -96,7 +99,7 @@ impl<'a> RevlogEntry<'a> {
     }
 
     pub fn parent_2_id(&self) -> Result<&[u8]> {
-        let p2 = self.chunk.parent_2() as isize;
+        let p2 = self.chunk.parent_2();
         if p2 == -1 {
             return Ok(NULL_ID);
         }
@@ -109,6 +112,15 @@ impl<'a> RevlogEntry<'a> {
             0
         } else {
             self.chunk.offset()
+        }
+    }
+
+    pub fn base_rev(&self) -> i32 {
+        let base = self.chunk.base_rev();
+        if base == self.revno && self.revlog.generaldelta {
+            -1
+        } else {
+            base
         }
     }
 }
@@ -124,7 +136,7 @@ impl<'a> Iterator for RevlogIterator<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let next = match self.cur {
             None => {
-                match self.revlog.index_entry_at_byte(0) {
+                match self.revlog.index_entry_at_byte(0, None) {
                     Ok(entry) => Some(entry),
                     Err(e) => return Some(Err(e)),
                 }
@@ -141,7 +153,7 @@ impl<'a> Iterator for RevlogIterator<'a> {
                     if next_offset == self.revlog.index.len {
                         None
                     } else {
-                        match self.revlog.index_entry_at_byte(next_offset as isize) {
+                        match self.revlog.index_entry_at_byte(next_offset as isize, None) {
                             Ok(entry) => Some(entry),
                             Err(e) => return Some(Err(e)),
                         }
@@ -163,7 +175,7 @@ pub struct Revlog {
     /// a linear scan.)
     data: Option<MappedData>,
     /// Important flags extracted from the first rev.
-    generaldelta: bool,
+    pub generaldelta: bool,
     /// If inline, a jump table is built.
     /// Mapping from rev no to byte_offset in the index.
     offset_table: Vec<isize>,
@@ -212,12 +224,12 @@ impl Revlog {
         if !self.inline() {
             return Ok(());
         }
-        let mut accum = vec![];
-        for entry in self.iter() {
+        let mut offset_tmp = vec![];
+        for (i, entry) in self.iter().enumerate() {
             let entry = try!(entry);
-            accum.push(entry.byte_offset);
+            offset_tmp.push(entry.byte_offset);
         }
-        self.offset_table = accum;
+        self.offset_table = offset_tmp;
         Ok(())
     }
 
@@ -225,28 +237,45 @@ impl Revlog {
         self.data.is_none()
     }
 
+    fn revno_from_offset(&self, offset: isize) -> Result<i32> {
+        if self.inline() {
+            match self.offset_table.binary_search(&offset) {
+                Ok(i) => Ok(i as i32),
+                Err(i) => Err(From::from("oh no")),
+            }
+        } else {
+            Ok((offset / 64) as i32)
+        }
+    }
+
     /// An index entry is 64 bytes long.
     /// If the revision data is not inline, then the index entries
     /// must be aligned at 64-byte boundaries. Otherwise, they may
     /// be anywhere.
-    fn index_entry_at_byte(&self, i: isize) -> Result<RevlogEntry> {
+    fn index_entry_at_byte(&self, offset: isize, revno: Option<i32>) -> Result<RevlogEntry> {
         if !self.inline() {
-            expect!(i % 64 == 0);
+            expect!(offset % 64 == 0);
         }
 
-        let chunk: &RevlogChunk = self.index.extract_value(i);
+        let chunk: &RevlogChunk = self.index.extract_value(offset);
         let data = match self.data {
-            None => self.index.extract_slice(i + 64, chunk.comp_len() as usize),
+            None => self.index.extract_slice(offset + 64, chunk.comp_len() as usize),
             Some(ref data) => {
-                let offset = if i == 0 { 0 } else { chunk.offset() as isize };
+                let offset = if offset == 0 { 0 } else { chunk.offset() as isize };
                 data.extract_slice(offset, chunk.comp_len() as usize)
             }
         };
 
+        let revno = match revno {
+            Some(x) => x,
+            None => try!(self.revno_from_offset(offset)),
+        };
+
         let result = RevlogEntry {
             revlog: &self,
+            revno: revno,
             chunk: chunk,
-            byte_offset: i,
+            byte_offset: offset,
             data: data,
         };
 
@@ -287,17 +316,17 @@ impl Revlog {
         }
     }
 
-    pub fn index(&self, index: isize) -> Result<RevlogEntry> {
+    pub fn index(&self, index: i32) -> Result<RevlogEntry> {
         if self.inline() {
             expect!(index >= 0, "index {} is out of bounds", index);
-            expect!(index < self.offset_table.len() as isize,
+            expect!(index < self.offset_table.len() as i32,
                     "index {} is bigger than {}",
                     index,
                     self.offset_table.len());
             let offset = self.offset_table[index as usize];
-            return self.index_entry_at_byte(offset);
+            return self.index_entry_at_byte(offset, Some(index));
         } else {
-            return self.index_entry_at_byte(64 * index);
+            return self.index_entry_at_byte(64 * index as isize, Some(index));
         }
     }
 }
