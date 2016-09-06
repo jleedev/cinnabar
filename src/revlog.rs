@@ -10,6 +10,7 @@ const REVLOGGENERALDELTA: u32 = (1 << 17);
 const NULL_ID: &'static [u8] = &[0u8; 20];
 
 /// A low-level cursor into RevlogNG index entry.
+///
 /// For instance, these fields do not yet take into account:
 /// - Conversion from big endian
 /// - Masking the version out of the first offset_flags
