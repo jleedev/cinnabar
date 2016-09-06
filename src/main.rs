@@ -1,4 +1,3 @@
-extern crate core;
 extern crate mmap;
 extern crate rustc_serialize;
 
@@ -13,7 +12,7 @@ mod revlog;
 use std::{error, result};
 use rustc_serialize::hex::ToHex;
 
-pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
+fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
     let revlog = try!(revlog::Revlog::open(path));
 
     println!("   rev    offset  length  {} linkrev nodeid       p1           p2",
