@@ -123,6 +123,35 @@ impl<'a> RevlogEntry<'a> {
             base
         }
     }
+
+    pub fn delta_chain(&self) -> DeltaChain {
+        DeltaChain { cur: Some(self.clone()) }
+    }
+}
+
+/// An iterator over the raw bits of a delta chain
+/// beginning with the specified rev and ending with the base
+pub struct DeltaChain<'a> {
+    // None if iteration is finished
+    cur: Option<RevlogEntry<'a>>,
+}
+
+impl<'a> Iterator for DeltaChain<'a> {
+    type Item = Result<&'a [u8]>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cur.is_none() {
+            return None;
+        }
+        let cur = self.cur.take().unwrap();
+        let result = cur.data;
+        let next_rev = cur.base_rev();
+        self.cur = if next_rev == -1 || next_rev == cur.revno {
+            None
+        } else {
+            Some(cur.revlog.index(next_rev).unwrap())
+        };
+        return Some(Ok(result));
+    }
 }
 
 pub struct RevlogIterator<'a> {
@@ -225,8 +254,8 @@ impl Revlog {
 
     fn init(&mut self) -> Result<()> {
         assert!(self._incomplete);
-        self._incomplete = false;
         if !self.inline() {
+            self._incomplete = false;
             return Ok(());
         }
         let mut offset_tmp = vec![];
@@ -235,6 +264,7 @@ impl Revlog {
             offset_tmp.push(entry.byte_offset);
         }
         self.offset_table = offset_tmp;
+        self._incomplete = false;
         Ok(())
     }
 
@@ -251,7 +281,11 @@ impl Revlog {
         if self.inline() {
             match self.offset_table.binary_search(&offset) {
                 Ok(i) => Ok(i as i32),
-                Err(i) => Err(From::from("oh no")),
+                Err(i) => {
+                    panic!("Couldn't find {}: {}", offset, i);
+                    expect!(false, "Couldn't find {}: {}", offset, i);
+                    Err(From::from("unused"))
+                },
             }
         } else {
             Ok((offset / 64) as i32)
@@ -271,7 +305,11 @@ impl Revlog {
         let data = match self.data {
             None => self.index.extract_slice(offset + 64, chunk.comp_len() as usize),
             Some(ref data) => {
-                let offset = if offset == 0 { 0 } else { chunk.offset() as isize };
+                let offset = if offset == 0 {
+                    0
+                } else {
+                    chunk.offset() as isize
+                };
                 data.extract_slice(offset, chunk.comp_len() as usize)
             }
         };

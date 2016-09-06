@@ -38,6 +38,7 @@ pub fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
                  &p1[..12],
                  &p2[..12]);
 
+        println!("Chain length: {}", entry.delta_chain().count());
         // println!("");
         // println!("hex data: {:?}", entry.data.to_hex());
         // println!("str data: {:?}", String::from_utf8_lossy(entry.data));
