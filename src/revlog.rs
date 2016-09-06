@@ -1,9 +1,4 @@
-use rustc_serialize::hex::ToHex;
-use std::fmt;
-use std::ops::Index;
-
 use util;
-
 use util::MappedData;
 pub use util::Result;
 
@@ -282,10 +277,11 @@ impl Revlog {
             match self.offset_table.binary_search(&offset) {
                 Ok(i) => Ok(i as i32),
                 Err(i) => {
-                    panic!("Couldn't find {}: {}", offset, i);
-                    expect!(false, "Couldn't find {}: {}", offset, i);
-                    Err(From::from("unused"))
-                },
+                    use std::fmt::Write;
+                    let mut s = String::new();
+                    write!(s, "Error finding revno for offset {}", offset).unwrap();
+                    return Err(From::from(s));
+                }
             }
         } else {
             Ok((offset / 64) as i32)
