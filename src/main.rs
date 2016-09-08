@@ -7,6 +7,7 @@ extern crate rustc_serialize;
 
 #[macro_use]
 mod util;
+mod patch;
 mod revlog;
 
 use std::{error, result};
@@ -37,11 +38,13 @@ fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
                  &p1[..12],
                  &p2[..12]);
 
-        println!("Chain length: {}", entry.delta_chain().count());
-        // println!("");
-        // println!("hex data: {:?}", entry.data.to_hex());
-        // println!("str data: {:?}", String::from_utf8_lossy(entry.data));
-        //
+        let mut chain: Vec<_>;
+        chain = entry.delta_chain().map(Result::unwrap).collect();
+        chain.reverse();
+        let base = chain.pop().unwrap();
+        let patches: Vec<Vec<u8>>;
+        patches = chain.iter().map(|rev| rev.data()).collect();
+        patch::apply(base.data(), patches);
     }
     Ok(())
 }

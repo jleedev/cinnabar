@@ -6,6 +6,8 @@ authors = ["Josh Lee <jleedev@gmail.com>"]
 [dependencies]
 mmap = "0.1.1"
 rustc-serialize = "0.3"
+flate2 = "0.2"
+byteorder = "0.5"
 
 [[bin]]
 name = "cinnabar"

@@ -1,3 +1,7 @@
+extern crate flate2;
+
+use std::io::Read;
+
 use util;
 use util::MappedData;
 pub use util::Result;
@@ -10,8 +14,11 @@ const REVLOGGENERALDELTA: u32 = (1 << 17);
 const NULL_ID: &'static [u8] = &[0u8; 20];
 
 /// A low-level cursor into RevlogNG index entry.
+/// The memory representation of this type is exactly the 64 bytes in
+/// the index file.
 ///
 /// For instance, these fields do not yet take into account:
+///
 /// - Conversion from big endian
 /// - Masking the version out of the first offset_flags
 /// - Distinguishing between offset and flags for the first rev
@@ -34,7 +41,10 @@ impl RevlogChunk {
         u64::from_be(self.offset_flags)
     }
     fn offset(&self) -> u64 {
-        u64::from_be(self.offset_flags) >> 16
+        self.offset_flags() >> 16
+    }
+    fn flags(&self) -> u16 {
+        (self.offset_flags() & 0xFFFF) as u16
     }
     pub fn comp_len(&self) -> i32 {
         i32::from_be(self.comp_len)
@@ -54,6 +64,7 @@ impl RevlogChunk {
     pub fn parent_2(&self) -> i32 {
         i32::from_be(self.parent_2)
     }
+    /// The 20-byte node ID.
     pub fn c_node_id(&self) -> &[u8] {
         &self.c_node_id[..20]
     }
@@ -120,12 +131,34 @@ impl<'a> RevlogEntry<'a> {
         }
     }
 
+    /// The data stored with this entry, uncompressed
+    pub fn data(&self) -> Vec<u8> {
+        if self.data.len() == 0 {
+            return vec![];
+        };
+        match self.data[0] as char {
+            '\0' => Vec::from(self.data),
+            'u' => Vec::from(&self.data[1..]),
+            'x' => Self::decompress(self.data),
+            _ => panic!(),
+        }
+    }
+
+    fn decompress(data: &[u8]) -> Vec<u8> {
+        let mut reader = flate2::read::ZlibDecoder::new(data);
+        let mut result = vec![];
+        reader.read_to_end(&mut result).unwrap();
+        result
+    }
+
+    /// The data stored with this entry and all previous entries in the
+    /// delta chain
     pub fn delta_chain(&self) -> DeltaChain {
         DeltaChain { cur: Some(self.clone()) }
     }
 }
 
-/// An iterator over the raw bits of a delta chain
+/// An iterator over the revs in a delta chain
 /// beginning with the specified rev and ending with the base
 pub struct DeltaChain<'a> {
     // None if iteration is finished
@@ -133,20 +166,19 @@ pub struct DeltaChain<'a> {
 }
 
 impl<'a> Iterator for DeltaChain<'a> {
-    type Item = Result<&'a [u8]>;
+    type Item = Result<RevlogEntry<'a>>;
     fn next(&mut self) -> Option<Self::Item> {
         if self.cur.is_none() {
             return None;
         }
         let cur = self.cur.take().unwrap();
-        let result = cur.data;
         let next_rev = cur.base_rev();
         self.cur = if next_rev == -1 || next_rev == cur.revno {
             None
         } else {
             Some(cur.revlog.index(next_rev).unwrap())
         };
-        return Some(Ok(result));
+        return Some(Ok(cur));
     }
 }
 
