@@ -18,6 +18,19 @@ extern crate bytes;
 use patch::byteorder::{BigEndian, ReadBytesExt};
 use std::io::{Cursor, Read};
 use self::bytes::{Bytes, Source};
+use std::fmt;
+
+struct DebugBytes<'a>(&'a Bytes);
+
+impl<'a> fmt::Debug for DebugBytes<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        // debug for bytes truncates and we can't have that
+        // ugh
+        let mut v = vec![];
+        self.0.copy_to(&mut v);
+        write!(f, "{:?}", String::from_utf8_lossy(&v))
+    }
+}
 
 pub fn apply(base: Vec<u8>, patches: Vec<Vec<u8>>) -> Vec<u8> {
     //println!("::: {:?}", String::from_utf8_lossy(&base));
@@ -25,18 +38,28 @@ pub fn apply(base: Vec<u8>, patches: Vec<Vec<u8>>) -> Vec<u8> {
     for patch in patches {
         let patch_len = patch.len() as u64;
         let mut cur = Cursor::new(patch);
+        let mut last = 0;
+        let mut next = Bytes::empty();
+        //println!("current buf {:?}", DebugBytes(&buf));
         while cur.position() != patch_len {
             assert!(cur.position() < patch_len);
-            let before_len = buf.len();
+            //println!("current next {:?}", DebugBytes(&next));
             let (a, b, c) = decode_header(&mut cur);
-            let piece = read_slice(&mut cur, c);
-            //println!("+++ {} {} {} {:?}", a, b, c, String::from_utf8_lossy(&piece));
-            let insertion: Bytes = From::from(&piece);
-            let left = buf.slice_to(a);
-            let right = buf.slice_from(b);
-            buf = left.concat(&insertion).concat(&right);
-            assert_eq!(before_len - (b - a) + c, buf.len());
+            let piece: Bytes = From::from(read_slice(&mut cur, c));
+            //println!("+++ {} {} {} {:?}", a, b, c, DebugBytes(&piece));
+            //println!("keep {:?}", DebugBytes(&buf.slice(last, a)));
+            next = next.concat(&buf.slice(last, a));
+            next = next.concat(&piece);
+            last = b;
         }
+        if last != buf.len() {
+            //println!("buf len is {}, last is {}", buf.len(), last);
+            //println!("to end {:?}", DebugBytes(&buf.slice_from(last)));
+            next = next.concat(&buf.slice_from(last));
+        } else {
+            //println!("no end");
+        }
+        buf = next;
     }
     let mut result = vec![];
     buf.copy_to(&mut result);

@@ -19,33 +19,23 @@ use crypto::digest::Digest;
 fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
     let revlog = try!(revlog::Revlog::open(path));
 
-    /*
     println!("   rev    offset  length  {} linkrev nodeid       p1           p2",
              if revlog.generaldelta {
                  "delta"
              } else {
                  " base"
              });
-    */
 
-    let mut i = 0;
+    let mut good = 0;
+    let mut bad = 0;
     for entry in revlog.iter() {
         let entry = try!(entry);
 
         let p1 = entry.parent_1_id().unwrap();
         let p2 = entry.parent_2_id().unwrap();
         let node_id = entry.chunk.c_node_id().to_hex();
-        /*
-        println!("{:6} {:9} {:7} {:6} {:7} {} {} {}",
-                 entry.revno,
-                 entry.offset(),
-                 entry.chunk.comp_len(),
-                 entry.base_rev(),
-                 entry.chunk.link_rev(),
-                 &node_id[..12],
-                 &p1.to_hex()[..12],
-                 &p2.to_hex()[..12]);
-        */
+        print_entry(&entry);
+        //println!("{:?}", String::from_utf8_lossy(&entry.data()));
 
         let mut chain: Vec<_>;
         chain = entry.delta_chain().map(Result::unwrap).collect();
@@ -54,7 +44,7 @@ fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
         let patches: Vec<Vec<u8>>;
         patches = chain.iter().map(|rev| rev.data()).collect();
         let text = patch::apply(base.data(), patches);
-        //println!("{:?}", String::from_utf8_lossy(&text));
+        // println!("{:?}", String::from_utf8_lossy(&text));
 
         let mut sha = Sha1::new();
         let mut ps = vec![p1, p2];
@@ -64,30 +54,34 @@ fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
         }
         sha.input(&text);
         let hex = sha.result_str();
-        /*
         if node_id != hex {
+            bad += 1;
             println!("ERROR");
-            println!("{:6} {:9} {:7} {:6} {:7} {} {} {}",
-                     entry.revno,
-                     entry.offset(),
-                     entry.chunk.comp_len(),
-                     entry.base_rev(),
-                     entry.chunk.link_rev(),
-                     &node_id[..12],
-                     &p1.to_hex()[..12],
-                     &p2.to_hex()[..12]);
-            for p in &ps {
-                println!("{:?}", p.to_hex());
-            }
             println!("{:?}", String::from_utf8_lossy(&text));
+        } else {
+            good += 1;
+            println!("verified {:?}", hex);
         }
-        */
-        assert_eq!(node_id, hex);
-        println!("{:?}", hex);
-        i = i + 1;
+        //assert_eq!(node_id, hex);
     }
-    println!("{} hashes verified", i);
+    println!("{} hashes verified", good);
+    println!("{} hashes failed", bad);
     Ok(())
+}
+
+fn print_entry(entry: &revlog::RevlogEntry) {
+    let p1 = entry.parent_1_id().unwrap();
+    let p2 = entry.parent_2_id().unwrap();
+    let node_id = entry.chunk.c_node_id().to_hex();
+    println!("{:6} {:9} {:7} {:6} {:7} {} {} {}",
+             entry.revno,
+             entry.offset(),
+             entry.chunk.comp_len(),
+             entry.base_rev(),
+             entry.chunk.link_rev(),
+             &node_id[..12],
+             &p1.to_hex()[..12],
+             &p2.to_hex()[..12]);
 }
 
 
