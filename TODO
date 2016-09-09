@@ -5,7 +5,7 @@ what are mercurial's file size limits?
 omg stop casting between all the different integer types
 
 milestone reached: of the 2446 revlogs found in hg's repo, we only panic
-on 197 of them.
+on 197 of them; moreover, we can verify the hashes on the other 2245.
 
 the hunk offsets are expressed in terms of the original text, and aren't
 easy to use with a destructive working copy. figure out what this means
