@@ -78,15 +78,15 @@ impl RevlogChunk {
 /// computing the full text. May be freely, and cheaply, copied.
 #[derive(Clone)]
 pub struct RevlogEntry<'a> {
-    pub revlog: &'a Revlog,
+    revlog: &'a Revlog,
     /// This rev's position in the index
     pub revno: i32,
     /// Pointer to the index block
     pub chunk: &'a RevlogChunk,
     /// Byte offset of chunk in the index file
-    pub byte_offset: isize,
+    byte_offset: isize,
     /// Pointer to the (compressed) delta in this revision.
-    pub data: &'a [u8],
+    data: &'a [u8],
     /// If the full text of this revision has been computed.
     full_text: RefCell<Option<Rc<Vec<u8>>>>,
 }
