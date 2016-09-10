@@ -37,13 +37,7 @@ fn read_revlog(path: &str) -> result::Result<(), Box<error::Error>> {
         print_entry(&entry);
         //println!("{:?}", String::from_utf8_lossy(&entry.data()));
 
-        let mut chain: Vec<_>;
-        chain = entry.delta_chain().map(Result::unwrap).collect();
-        let base = chain.pop().unwrap();
-        chain.reverse();
-        let patches: Vec<Vec<u8>>;
-        patches = chain.iter().map(|rev| rev.data()).collect();
-        let text = patch::apply(base.data(), patches);
+        let text = entry.text();
         // println!("{:?}", String::from_utf8_lossy(&text));
 
         let mut sha = Sha1::new();

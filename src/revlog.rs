@@ -1,7 +1,10 @@
 extern crate flate2;
 
 use std::io::Read;
+use std::rc::Rc;
+use std::cell::{RefCell, Ref};
 
+use patch;
 use util;
 use util::MappedData;
 pub use util::Result;
@@ -70,6 +73,9 @@ impl RevlogChunk {
     }
 }
 
+/// Our representation of a revision. Contains pointers to the raw
+/// frames in the revlog, and the implementation contains routines for
+/// computing the full text. May be freely, and cheaply, copied.
 #[derive(Clone)]
 pub struct RevlogEntry<'a> {
     pub revlog: &'a Revlog,
@@ -79,9 +85,10 @@ pub struct RevlogEntry<'a> {
     pub chunk: &'a RevlogChunk,
     /// Byte offset of chunk in the index file
     pub byte_offset: isize,
-    /// Data frame can either be a slice of the inline data or
-    /// a slice of the external data.
+    /// Pointer to the (compressed) delta in this revision.
     pub data: &'a [u8],
+    /// If the full text of this revision has been computed.
+    full_text: RefCell<Option<Rc<Vec<u8>>>>,
 }
 
 impl<'a> RevlogEntry<'a> {
@@ -149,6 +156,25 @@ impl<'a> RevlogEntry<'a> {
         let mut result = vec![];
         reader.read_to_end(&mut result).unwrap();
         result
+    }
+
+    /// The text of this revision, computed from the deltas.
+    pub fn text(&self) -> Rc<Vec<u8>> {
+        if let Some(ref found) = *self.full_text.borrow() {
+            return found.clone();
+        }
+        let mut chain: Vec<_>;
+        chain = self.delta_chain().map(Result::unwrap).collect();
+        let base = chain.pop().unwrap();
+        chain.reverse();
+        let patches: Vec<Vec<u8>>;
+        patches = chain.iter().map(|rev| rev.data()).collect();
+        let text = patch::apply(base.data(), patches);
+        *self.full_text.borrow_mut() = Some(Rc::new(text));
+        match *self.full_text.borrow() {
+            None => unreachable!(),
+            Some(ref found) => found.clone(),
+        }
     }
 
     /// The data stored with this entry and all previous entries in the
@@ -354,6 +380,7 @@ impl Revlog {
             chunk: chunk,
             byte_offset: offset,
             data: data,
+            full_text: RefCell::new(None),
         };
 
         if result.revno != 0 {
