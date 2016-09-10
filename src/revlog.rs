@@ -356,6 +356,10 @@ impl Revlog {
             data: data,
         };
 
+        if result.revno != 0 {
+            assert_eq!(0, result.chunk.flags());
+        }
+
         // Some quick sanity checks which are always true and can help
         // verify correctness:
         // - The 32 byte id field is 20 bytes of sha and 12 zero bytes
