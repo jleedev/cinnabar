@@ -17,7 +17,8 @@ extern crate bytes;
 
 use patch::byteorder::{BigEndian, ReadBytesExt};
 use std::io::{Cursor, Read};
-use self::bytes::{Bytes, Source};
+use self::bytes::Bytes;
+use self::bytes::buf::Source;
 use std::fmt;
 
 struct DebugBytes<'a>(&'a Bytes);
@@ -34,7 +35,7 @@ impl<'a> fmt::Debug for DebugBytes<'a> {
 
 pub fn apply(base: Vec<u8>, patches: Vec<Vec<u8>>) -> Vec<u8> {
     //println!("::: {:?}", String::from_utf8_lossy(&base));
-    let mut buf: Bytes = From::from(&base);
+    let mut buf: Bytes = From::from(base);
     for patch in patches {
         let patch_len = patch.len() as u64;
         let mut cur = Cursor::new(patch);
